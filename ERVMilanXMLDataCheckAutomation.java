@@ -1,4 +1,4 @@
-package com.suja;
+package de.erv.vgercls.importtool;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -7,13 +7,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
+import java.sql.Connection;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.parsers.SAXParserFactory;
 import javax.xml.transform.OutputKeys;
 import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerFactory;
@@ -26,28 +27,68 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
-import org.xml.sax.helpers.DefaultHandler;
 
 public class ERVMilanXMLDataCheckAutomation {
 
     private static final String PROPERTY_CLAIMS_NUMBER = "CLAIMS_NUMBER";
     private static final String PROPERTY_MLC_AMOUNT = "MLC_AMOUNT";
+    private static InputStreamReader characterStream;
+
+    private static String getOutputFilePath = null;
+    private static File fileWithMLCAmtGtZero = null;
+
+    public static File getFileWithMLCAmtGtZero() {
+        return fileWithMLCAmtGtZero;
+    }
+
+    public static void setFileWithMLCAmtGtZero(File aFileWithMLCAmtGtZero) {
+        fileWithMLCAmtGtZero = aFileWithMLCAmtGtZero;
+    }
+
+    public static String getGetOutputFilePath() {
+        return getOutputFilePath;
+    }
+
+    public static void setGetOutputFilePath(String aGetOutputFilePath) {
+        getOutputFilePath = aGetOutputFilePath;
+    }
+
+    /** Class to handle the db issues */
+    private static ImportDB importDB;
+    private static Connection con;
 
     public static void main(String[] args) {
 
         String inputXmlFilePath = getFilePath();
-        List<File> fileList = listFilesForFolder(inputXmlFilePath);
+        ImportClient ic = new ImportClient();
+        if (importDB == null) {
+            importDB = new ImportDB();
+            con = ic.getDBDetails();
+        }
 
+        createOutoutDirectoryForToday(inputXmlFilePath);
+
+        List<File> fileList = listFilesForFolder(inputXmlFilePath);
         List<File> xmlFileList = filterXmlFiles(fileList);
         checkXmlfileList(xmlFileList);
         for (File file : xmlFileList) {
-            readXMLFileAnddisplayTags(file);
+            retrieveMLCAmtGtZero(file);
         }
 
     }
 
+    private static String getDBDetails(String claimNo, String query) {
+        String result = null;
+
+        result = importDB.getClaimForItalyDataFixAutomation(claimNo, query, con);
+
+        return result;
+
+    }
+
     private static String getFilePath() {
-        String filePath = "C:/XMLFiles";
+        // String filePath = "C:/XMLFiles";
+        String filePath = "C:\\CLSERVMILAN";
         return filePath;
     }
 
@@ -57,7 +98,6 @@ public class ERVMilanXMLDataCheckAutomation {
         File folder = new File(filePath);
         for (File fileName : folder.listFiles()) {
             if (fileName.isDirectory()) {
-
                 continue;
             }
             fileList.add(fileName);
@@ -93,63 +133,63 @@ public class ERVMilanXMLDataCheckAutomation {
         }
     }
 
-    static String getValue(String tag, Element element) {
-        NodeList nodes = element.getElementsByTagName(tag).item(0).getChildNodes();
-        Node node = (Node) nodes.item(0);
-        return node.getNodeValue();
-    }
+    private static Document retrieveMLCAmtGtZero(File inputXMLFile) {
+        Document finalDocument = null;
 
-    private static void visit(Node node, int level) {
-        NodeList list = node.getChildNodes();
-        String nodeName = new String();
-        String nodeValue = new String();
-        // System.out.println(list);
-        for (int i = 0; i < list.getLength(); i++) {
-            Node childNode = list.item(i);
-            if (childNode.getNodeType() == Node.ELEMENT_NODE) {
-                nodeName = childNode.getNodeName().toString();
-                System.out.println(nodeName);
-                visit(childNode, level + 1);
-            }
-        }
-    }
+        Document claimsNotAlreadExistingDoc = null;
 
-    private static void readXMLFileAnddisplayTags(File inputXMLFile) {
-        SAXParserFactory saxParserFactory = SAXParserFactory.newInstance();
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             DocumentBuilder builder = factory.newDocumentBuilder();
-            DefaultHandler handler = new DefaultHandler();
+
             System.out.println(inputXMLFile);
             InputStream inputStream = new FileInputStream(inputXMLFile);
-            InputSource is = new InputSource(new InputStreamReader(inputStream, "UTF-8"));
+            characterStream = new InputStreamReader(inputStream, "UTF-8");
+            InputSource is = new InputSource(characterStream);
             is.setEncoding("UTF-8");
-            Document document = builder.parse(is);
 
-            Element parentNode = document.getDocumentElement();
-            // System.out.println(parentNode.getNodeName());
+            Document inputDocument = builder.parse(is);
+            // Parent node of input document
+            Element parentNode = inputDocument.getDocumentElement();
 
-            // create another xml document with nodes having mlc amount > 0
+            // Build query to check which claim numbers are already inserted before the job crash
+            // Individual payments' select query
+            String queryPart1 = "SELECT * FROM fl_claim claim, fl_payment payment WHERE claim.mercur_vorgangsnummer=";
+            // All payments select
+            String allPaymentsQuery =
+                    "SELECT * FROM fl_claim claim, fl_payment payment WHERE mercur_vorgangsnummer in(";
+            StringBuilder allPayments = new StringBuilder(allPaymentsQuery);
+
+            // create another new xml document with nodes having mlc amount > 0
             DocumentBuilderFactory documentFactory = DocumentBuilderFactory.newInstance();
             DocumentBuilder documentBuilder = documentFactory.newDocumentBuilder();
-            Document document2 = documentBuilder.newDocument();
-            Element rootname = document2.createElement(parentNode.getNodeName());
-            document2.appendChild(rootname);
+            finalDocument = documentBuilder.newDocument();
+            // Parent node retrieved from input document and added to new document
+            Element rootname = finalDocument.createElement(parentNode.getNodeName());
+            finalDocument.appendChild(rootname);
 
+            claimsNotAlreadExistingDoc = documentBuilder.newDocument();
+            Element rootname1 = claimsNotAlreadExistingDoc.createElement(parentNode.getNodeName());
+            claimsNotAlreadExistingDoc.appendChild(rootname1);
+
+            // Child nodes retrieved from input document
             NodeList children = parentNode.getChildNodes();
-            int j = 0;
+            StringBuilder individualQuery = new StringBuilder();
+            String claimNumber = null;
 
             System.out.println("\n");
             for (int i = 0; i < children.getLength(); i++) {
-
+                // Individual child node got from children nodes from input document
+                // These are nodes which are related to one claim detail
                 Node child = children.item(i);
                 if (child.getNodeType() != Node.ELEMENT_NODE) {
                     continue;
                 }
-                System.out.println("length " + children.getLength());
 
+                // All the sub nodes in child node are retrieved one by one. These nodes are details containing details
+                // about a mercur claim number
                 NodeList grandChildren = child.getChildNodes();
-                System.out.println("\nClaim item " + i);
+                // System.out.println("\nClaim item " + i);
 
                 for (int x = 0; x < grandChildren.getLength(); x++) {
                     Node grandChild = grandChildren.item(x);
@@ -160,17 +200,47 @@ public class ERVMilanXMLDataCheckAutomation {
                     String key = grandChild.getNodeName();
                     String value = grandChild.getTextContent();
                     if (key.equals(PROPERTY_CLAIMS_NUMBER)) {
-                        System.out.println("claims number " + value);
+                        claimNumber = value;
+
+                        // System.out.println("claims number " + value);
+
                     }
                     if (key.equals(PROPERTY_MLC_AMOUNT) && Float.parseFloat(value.trim()) > 0) {
-                        System.out.println("mlc amount " + value);
-                        // childNodeValuesMap.put(x, child);
-                        NodeList list = document.getElementsByTagName(child.getNodeName());
 
+                        // System.out.println("mlc amount " + value);
+                        // NodeList list = document.getElementsByTagName(child.getNodeName());
+
+                        // If the mlc amount value is > 0, then the entire child node is retrieved and copied to final
+                        // document
                         Node element = children.item(i);
 
-                        Node copiedNode = document2.importNode(element, true);
-                        document2.getDocumentElement().appendChild(copiedNode);
+                        Node copiedNode = finalDocument.importNode(element, true);
+                        Node copiedNode1 = claimsNotAlreadExistingDoc.importNode(element, true);
+                        finalDocument.getDocumentElement().appendChild(copiedNode);
+
+                        // qeury is built to check whether claim number is already inserted to the FL_PAYMENT and
+                        // FL_CLAIM table.
+                        // The query will be available in the console and should be copied to DB tool like TOAD Editor
+                        // to check manually.
+                        // individualQuery.append(queryPart1).append("'" + claimNumber + "' ").append(
+                        // "AND claim.VORGANGSNUMMER = payment.ACTIVITY_NUMBER;");
+                        individualQuery.append(queryPart1)
+                                .append("?")
+                                .append(" AND claim.VORGANGSNUMMER = payment.ACTIVITY_NUMBER");
+
+                        String res = getDBDetails(claimNumber, individualQuery.toString());
+                        if (res != null) {
+                            System.out
+                                    .println("Mercure Claim no " + claimNumber + " exists with vorgangsnummer " + res);
+                        } else {
+                            System.out.println("Mercure Claim no " + claimNumber + " does not exist");
+                            claimsNotAlreadExistingDoc.getDocumentElement().appendChild(copiedNode1);
+                        }
+                        System.out.println(individualQuery.append(";").toString());
+                        // The below builds query to include all claim numbers to check in one stretch.
+                        allPayments.append("'").append(claimNumber).append("'").append(",");
+                        claimNumber = null;
+                        individualQuery.setLength(0);
 
                     } else {
                         continue;
@@ -179,7 +249,13 @@ public class ERVMilanXMLDataCheckAutomation {
                 }
 
             }
-            prettyPrint(document2);
+            allPayments.append("'")
+                    .append(claimNumber)
+                    .append("'")
+                    .append(") AND claim.VORGANGSNUMMER = payment.ACTIVITY_NUMBER;");
+            System.out.println(allPayments.toString());
+            prettyPrint(finalDocument, "\\mlcAmtGtZero.xml");
+            prettyPrint(claimsNotAlreadExistingDoc, "\\data_interface.xml");
 
         } catch (ParserConfigurationException | SAXException e) {
             e.printStackTrace();
@@ -192,23 +268,48 @@ public class ERVMilanXMLDataCheckAutomation {
         } catch (Exception e) {
             e.printStackTrace();
         }
+        return finalDocument;
     }
 
-    private boolean checkFileSize(File fileName) {
-        if (fileName.exists() && fileName.length() <= 0) {
-            return false;
-        }
-        return true;
-    }
+    // private boolean checkFileSize(File fileName) {
+    // if (fileName.exists() && fileName.length() <= 0) {
+    // return false;
+    // }
+    // return true;
+    // }
 
-    public static final Document prettyPrint(Document xml) throws Exception {
+    public static Document prettyPrint(Document xml, String fileName) throws Exception {
         Transformer tf = TransformerFactory.newInstance().newTransformer();
         tf.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes");
         tf.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
         tf.setOutputProperty(OutputKeys.INDENT, "yes");
-        StreamResult streamResult = new StreamResult(new File("C:\\XMLFiles\\desitnationfile\\newFile.xml"));
+        String absoluteFileNameNPath = getGetOutputFilePath();
+        System.out.println(absoluteFileNameNPath + fileName);
+        File mlcAmtGtZeroFile = new File(absoluteFileNameNPath + fileName);
+        StreamResult streamResult = new StreamResult(mlcAmtGtZeroFile);
+        setFileWithMLCAmtGtZero(mlcAmtGtZeroFile);
         tf.transform(new DOMSource(xml), streamResult);
         return xml;
+    }
+
+    private static LocalDate getCurrentDate() {
+        LocalDate today = LocalDate.now();
+        return today;
+    }
+
+    private static File createOutoutDirectoryForToday(String filePath) {
+        String dirName = getCurrentDate().toString();
+
+        File dir = new File(filePath + "\\fileOutput\\" + dirName);
+        if (!dir.exists()) {
+            dir.mkdir();
+            System.out.println("Directory created for today");
+        } else {
+            System.out.println("Directory exists already for today");
+        }
+
+        setGetOutputFilePath(dir.getAbsolutePath());
+        return dir;
     }
 
 }
